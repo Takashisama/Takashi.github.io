@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>QR Code Follower Robot</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
+    <style>
+        body { font-family: sans-serif; text-align: center; margin: 0; background-color: #333; color: white; }
+        h1 { margin-top: 10px; }
+        #video-container { position: relative; max-width: 640px; margin: 10px auto; }
+        video { width: 100%; height: auto; display: block; }
+        canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
+        button { font-size: 1.2rem; padding: 15px; margin: 5px; border-radius: 8px; border: none; }
+        #connect-btn { background-color: #4CAF50; color: white; }
+        #status { margin-top: 10px; font-weight: bold; height: 20px; }
+    </style>
+</head>
+<body>
+    <h1>QR Code Follower Robot</h1>
+    <button id="connect-btn">1. Bluetooth接続して開始</button>
+    <div id="status">未接続</div>
+
+    <div id="video-container">
+        <video id="video" playsinline autoplay muted></video>
+        <canvas id="canvas"></canvas>
+    </div>
+
+    <script>
+        const video = document.getElementById('video');
+        const canvasElement = document.getElementById('canvas');
+        const canvas = canvasElement.getContext('2d');
+        const connectBtn = document.getElementById('connect-btn');
+        const statusDiv = document.getElementById('status');
+        
+        let bluetoothCharacteristic;
+        let lastCommand = '';
+
+        // --- Bluetooth接続処理 ---
+        connectBtn.onclick = async () => {
+            try {
+                // 1. Bluetoothデバイスに接続
+                const device = await navigator.bluetooth.requestDevice({
+                    filters: [{ name: 'ESP32_Robot' }],
+                    optionalServices: ['00001101-0000-1000-8000-00805f9b34fb']
+                });
+                const server = await device.gatt.connect();
+                const service = await server.getPrimaryService('00001101-0000-1000-8000-00805f9b34fb');
+                bluetoothCharacteristic = await service.getCharacteristic('00001101-0000-1000-8000-00805f9b34fb');
+                
+                // 2. カメラを起動
+                const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+                video.srcObject = stream;
+                video.onloadedmetadata = () => {
+                    canvasElement.width = video.videoWidth;
+                    canvasElement.height = video.videoHeight;
+                    requestAnimationFrame(tick); // 映像解析ループを開始
+                };
+
+                statusDiv.textContent = '接続完了！QRコードを追跡中...';
+                connectBtn.style.display = 'none';
+
+            } catch (error) {
+                statusDiv.textContent = 'エラー: ' + error;
+                console.error(error);
+            }
+        };
+
+        // --- コマンド送信関数 ---
+        const sendCommand = (command) => {
+            if (!bluetoothCharacteristic || command === lastCommand) return; // 同じコマンドは連続して送らない
+            const encoder = new TextEncoder();
+            bluetoothCharacteristic.writeValue(encoder.encode(command));
+            lastCommand = command;
+            console.log("Sent:", command);
+        };
+        
+        // --- 映像解析ループ ---
+        function tick() {
+            if (video.readyState === video.HAVE_ENOUGH_DATA) {
+                // 映像をキャンバスに描画
+                canvas.drawImage(video, 0, 0, canvasElement.width, canvasElement.height);
+                // キャンバスの画像データを取得
+                const imageData = canvas.getImageData(0, 0, canvasElement.width, canvasElement.height);
+                // jsQRでQRコードを検出
+                const code = jsQR(imageData.data, imageData.width, imageData.height, {
+                    inversionAttempts: "dontInvert",
+                });
+
+                if (code) {
+                    // QRコードが見つかった場合
+                    drawQrBox(code.location); // QRコードを四角で囲む
+                    
+                    // --- ここからがロボットの判断ロジック ---
+                    const qrCenterX = code.location.topLeftCorner.x + (code.location.topRightCorner.x - code.location.topLeftCorner.x) / 2;
+                    const qrWidth = code.location.topRightCorner.x - code.location.topLeftCorner.x;
+
+                    const screenCenterX = canvasElement.width / 2;
+                    const turnThreshold = canvasElement.width * 0.2; // 画面中央20%を「中央」とみなす
+                    const targetWidth = canvasElement.width * 0.6; // 画面幅の60%を目標サイズとする
+                    
+                    let command = 'S'; // デフォルトは停止
+
+                    if (qrCenterX < screenCenterX - turnThreshold) {
+                        command = 'L'; // QRが左にある -> 左回転
+                        statusDiv.textContent = '左に回転中...';
+                    } else if (qrCenterX > screenCenterX + turnThreshold) {
+                        command = 'R'; // QRが右にある -> 右回転
+                        statusDiv.textContent = '右に回転中...';
+                    } else {
+                        // QRが中央にある場合、距離を判断
+                        if (qrWidth < targetWidth * 0.8) {
+                            command = 'F'; // 小さい -> 前進
+                            statusDiv.textContent = '前進中...';
+                        } else if (qrWidth > targetWidth * 1.2) {
+                            command = 'B'; // 大きい -> 後退
+                            statusDiv.textContent = '後退中...';
+                        } else {
+                            command = 'S'; // ちょうどいい -> 停止
+                            statusDiv.textContent = '目標距離に到達！';
+                        }
+                    }
+                    sendCommand(command);
+
+                } else {
+                    // QRコードが見つからない場合
+                    canvas.clearRect(0, 0, canvasElement.width, canvasElement.height); // 四角を消す
+                    sendCommand('S'); // 停止する
+                    statusDiv.textContent = 'QRコードを探しています...';
+                }
+            }
+            requestAnimationFrame(tick); // 次のフレームで再度この関数を呼び出す
+        }
+
+        // 検出したQRコードを四角で囲む補助関数
+        function drawQrBox(location) {
+            canvas.beginPath();
+            canvas.moveTo(location.topLeftCorner.x, location.topLeftCorner.y);
+            canvas.lineTo(location.topRightCorner.x, location.topRightCorner.y);
+            canvas.lineTo(location.bottomRightCorner.x, location.bottomRightCorner.y);
+            canvas.lineTo(location.bottomLeftCorner.x, location.bottomLeftCorner.y);
+            canvas.closePath();
+            canvas.lineWidth = 4;
+            canvas.strokeStyle = '#00FF00';
+            canvas.stroke();
+        }
+    </script>
+</body>
+</html>
