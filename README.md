@@ -1,1 +1,1 @@
-# Takashisama.github.io
+# Takashi.github.io
