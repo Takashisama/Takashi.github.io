@@ -14,7 +14,7 @@
   <p id="ledStatus">LED状態: ---</p>
 
   <script>
-    const esp32_ip = "http://192.168.1.50"; // ←ESP32のIPに置き換える
+    const esp32_ip = "http://192.168.3.118"; // ←ESP32のIPに置き換える
 
     document.getElementById("getData").addEventListener("click", async () => {
       const response = await fetch(`${esp32_ip}/data`);
@@ -30,3 +30,4 @@
   </script>
 </body>
 </html>
+
