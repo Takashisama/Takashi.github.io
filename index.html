@@ -1,136 +1,65 @@
 <!DOCTYPE html>
-<html>
+<html lang="ja">
 <head>
-    <title>Wi-Fi QR Follower Robot</title>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
-    <style>
-        /* CSS部分は変更なし */
-        body { font-family: sans-serif; text-align: center; margin: 0; background-color: #333; color: white; }
-        h1 { margin-top: 10px; }
-        #video-container { position: relative; max-width: 640px; margin: 10px auto; }
-        video { width: 100%; height: auto; display: block; }
-        canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
-        button { font-size: 1.2rem; padding: 15px; margin: 5px; border-radius: 8px; border: none; }
-        #start-btn { background-color: #4CAF50; color: white; }
-        #status { margin-top: 10px; font-weight: bold; height: 20px; }
-    </style>
+  <meta charset="UTF-8">
+  <title>ESP32 BLE Connect</title>
 </head>
 <body>
-    <h1>Wi-Fi QR Follower Robot</h1>
-    <button id="start-btn">カメラを起動</button>
-    <div id="status">停止中</div>
+  <h1>ESP32 BLE デモ</h1>
+  <button id="connectBtn">ESP32に接続</button>
+  <p id="status">未接続</p>
+  <p>
+    <button id="readBtn" disabled>データを読む</button>
+    <button id="writeBtn" disabled>データを書き込む</button>
+  </p>
+  <pre id="log"></pre>
 
-    <div id="video-container">
-        <video id="video" playsinline autoplay muted></video>
-        <canvas id="canvas"></canvas>
-    </div>
+  <script>
+    let characteristic;
 
-    <script>
-        // --- IPアドレスをmDNSの名前に変更 ---
-        const esp32_address = "http://esp32.local";
-        // ------------------------------------
+    async function connectESP32() {
+      try {
+        const device = await navigator.bluetooth.requestDevice({
+          filters: [{ services: ['00001234-0000-1000-8000-00805f9b34fb'] }]
+        });
 
-        const video = document.getElementById('video');
-        const canvasElement = document.getElementById('canvas');
-        const canvas = canvasElement.getContext('2d');
-        const startBtn = document.getElementById('start-btn');
-        const statusDiv = document.getElementById('status');
-        
-        let lastCommand = '';
+        document.getElementById("status").textContent = "接続中...";
 
-        startBtn.onclick = async () => {
-            try {
-                const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
-                video.srcObject = stream;
-                video.onloadedmetadata = () => {
-                    canvasElement.width = video.videoWidth;
-                    canvasElement.height = video.videoHeight;
-                    requestAnimationFrame(tick);
-                };
-                statusDiv.textContent = 'QRコードを探しています...';
-                startBtn.style.display = 'none';
-            } catch (error) {
-                statusDiv.textContent = 'カメラの起動に失敗しました: ' + error;
-            }
-        };
-        
-        // --- コマンド送信関数 (URLの作り方を変更) ---
-        const sendCommand = (command) => {
-            if (command === lastCommand) return;
+        const server = await device.gatt.connect();
+        const service = await server.getPrimaryService('00001234-0000-1000-8000-00805f9b34fb');
+        characteristic = await service.getCharacteristic('00005678-0000-1000-8000-00805f9b34fb');
 
-            let endpoint = 'stop';
-            switch(command) {
-                case 'F': endpoint = 'forward'; break;
-                case 'B': endpoint = 'backward'; break;
-                case 'L': endpoint = 'left'; break;
-                case 'R': endpoint = 'right'; break;
-                case 'S': endpoint = 'stop'; break;
-            }
-            
-            // fetch APIのURLをmDNSのアドレスと組み合わせる
-            fetch(`${esp32_address}/${endpoint}`).catch(console.error);
-            
-            lastCommand = command;
-            console.log("Sent:", command, `-> /${endpoint}`);
-        };
-        
-        // --- 映像解析ループ (変更なし) ---
-        function tick() {
-            if (video.readyState === video.HAVE_ENOUGH_DATA) {
-                canvas.drawImage(video, 0, 0, canvasElement.width, canvasElement.height);
-                const imageData = canvas.getImageData(0, 0, canvasElement.width, canvasElement.height);
-                const code = jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: "dontInvert" });
+        document.getElementById("status").textContent = "接続成功 ✅";
+        document.getElementById("readBtn").disabled = false;
+        document.getElementById("writeBtn").disabled = false;
 
-                if (code) {
-                    drawQrBox(code.location);
-                    const qrCenterX = code.location.topLeftCorner.x + (code.location.topRightCorner.x - code.location.topLeftCorner.x) / 2;
-                    const qrWidth = code.location.topRightCorner.x - code.location.topLeftCorner.x;
-                    const screenCenterX = canvasElement.width / 2;
-                    const turnThreshold = canvasElement.width * 0.2;
-                    const targetWidth = canvasElement.width * 0.6;
-                    
-                    let command = 'S';
-                    if (qrCenterX < screenCenterX - turnThreshold) {
-                        command = 'L';
-                        statusDiv.textContent = '左に回転中...';
-                    } else if (qrCenterX > screenCenterX + turnThreshold) {
-                        command = 'R';
-                        statusDiv.textContent = '右に回転中...';
-                    } else {
-                        if (qrWidth < targetWidth * 0.8) {
-                            command = 'F';
-                            statusDiv.textContent = '前進中...';
-                        } else if (qrWidth > targetWidth * 1.2) {
-                            command = 'B';
-                            statusDiv.textContent = '後退中...';
-                        } else {
-                            command = 'S';
-                            statusDiv.textContent = '目標距離に到達！';
-                        }
-                    }
-                    sendCommand(command);
-                } else {
-                    canvas.clearRect(0, 0, canvasElement.width, canvasElement.height);
-                    sendCommand('S');
-                    statusDiv.textContent = 'QRコードを探しています...';
-                }
-            }
-            requestAnimationFrame(tick);
-        }
+      } catch (error) {
+        document.getElementById("status").textContent = "エラー: " + error;
+      }
+    }
 
-        function drawQrBox(location) {
-            canvas.beginPath();
-            canvas.moveTo(location.topLeftCorner.x, location.topLeftCorner.y);
-            canvas.lineTo(location.topRightCorner.x, location.topRightCorner.y);
-            canvas.lineTo(location.bottomRightCorner.x, location.bottomRightCorner.y);
-            canvas.lineTo(location.bottomLeftCorner.x, location.bottomLeftCorner.y);
-            canvas.closePath();
-            canvas.lineWidth = 4;
-            canvas.strokeStyle = '#00FF00';
-            canvas.stroke();
-        }
-    </script>
+    async function readData() {
+      if (!characteristic) return;
+      const value = await characteristic.readValue();
+      let decoder = new TextDecoder("utf-8");
+      log("受信: " + decoder.decode(value));
+    }
+
+    async function writeData() {
+      if (!characteristic) return;
+      let encoder = new TextEncoder();
+      const data = encoder.encode("Hello ESP32!");
+      await characteristic.writeValue(data);
+      log("送信: Hello ESP32!");
+    }
+
+    function log(msg) {
+      document.getElementById("log").textContent += msg + "\n";
+    }
+
+    document.getElementById("connectBtn").addEventListener("click", connectESP32);
+    document.getElementById("readBtn").addEventListener("click", readData);
+    document.getElementById("writeBtn").addEventListener("click", writeData);
+  </script>
 </body>
 </html>
